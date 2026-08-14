@@ -119,10 +119,14 @@ with left:
     oa, q, a = A.disagreement(M)
     kap = A.kappa(M)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric('Overall accuracy', f'{oa*100:.1f}%')
-    c2.metric('Kappa', f'{kap:.2f}', help='Reportable but weak — see the disagreement split')
-    c3.metric('Quantity disagr.', f'{q*100:.1f}%', help='Wrong amount of a class')
-    c4.metric('Allocation disagr.', f'{a*100:.1f}%', help='Right amount, wrong place')
+    c1.metric('Overall accuracy', f'{oa*100:.1f}%',
+              help='Of all the checked points, the share the map got right. The headline; it can hide a failing class behind a dominant one.')
+    c2.metric('Kappa', f'{kap:.2f}',
+              help='Overall agreement corrected against a random-labelling baseline. Legacy: report it if expected, lean on the others.')
+    c3.metric('Quantity disagr.', f'{q*100:.1f}%',
+              help='The map has the wrong AMOUNT of a class: its total is off, too much or too little.')
+    c4.metric('Allocation disagr.', f'{a*100:.1f}%',
+              help='The amounts are right but sit in the wrong PLACES: a swap across the scene.')
 
     # disagreement stacked bar: label inside when the segment is wide enough,
     # otherwise below the bar in the segment's own colour (never clipped)
