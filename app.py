@@ -65,20 +65,20 @@ with st.sidebar:
     cols = SCHEMES[st.session_state.scheme]['cols']
     n = len(names)
 
-    if st.button('Reset matrix', use_container_width=True):
+    if st.button('Reset matrix', width='stretch'):
         load_scheme(st.session_state.scheme); st.rerun()
 
     st.divider()
     st.subheader('Teaching presets')
-    if st.button('Majority-class trap', use_container_width=True,
+    if st.button('Majority-class trap', width='stretch',
                  help='Label almost everything one dominant class'):
         Z = np.zeros((n, n)); Z[0] = [85 if j == 0 else round(15 / (n - 1)) for j in range(n)]
         st.session_state.M = Z; st.rerun()
-    if st.button('Pure allocation error', use_container_width=True,
+    if st.button('Pure allocation error', width='stretch',
                  help='Right amount of each class, wrong places (swap)'):
         Z = np.full((n, n), 4.0); np.fill_diagonal(Z, 30.0)
         st.session_state.M = Z; st.rerun()
-    if st.button('Pure quantity error', use_container_width=True,
+    if st.button('Pure quantity error', width='stretch',
                  help='One class systematically over-mapped'):
         Z = np.zeros((n, n)); np.fill_diagonal(Z, 30.0)
         if n >= 2:
@@ -107,7 +107,7 @@ with left:
     df = pd.DataFrame(st.session_state.M.astype(int),
                       index=[f'map: {c}' for c in names],
                       columns=[f'ref: {c}' for c in names])
-    edited = st.data_editor(df, use_container_width=True,
+    edited = st.data_editor(df, width='stretch',
                             column_config={c: st.column_config.NumberColumn(
                                 min_value=0, step=1, format='%d') for c in df.columns})
     M = edited.to_numpy(float)
@@ -124,20 +124,31 @@ with left:
     c3.metric('Quantity disagr.', f'{q*100:.1f}%', help='Wrong amount of a class')
     c4.metric('Allocation disagr.', f'{a*100:.1f}%', help='Right amount, wrong place')
 
-    # disagreement stacked bar
-    figb, axb = plt.subplots(figsize=(6.2, 1.1)); figb.patch.set_facecolor(PAPER)
-    axb.barh(0, oa * 100, color=GOOD, edgecolor='white')
-    axb.barh(0, q * 100, left=oa * 100, color=WARN, edgecolor='white')
-    axb.barh(0, a * 100, left=(oa + q) * 100, color=BAD, edgecolor='white')
-    axb.text(oa * 50, 0, f'agreement {oa*100:.0f}%', ha='center', va='center',
-             color='white', fontsize=9, fontweight='bold')
-    if a > 0.04:
-        axb.text(oa * 100 + q * 100 + a * 50, 0, f'allocation {a*100:.0f}%',
-                 ha='center', va='center', color='white', fontsize=8.5, fontweight='bold')
-    axb.set_xlim(0, 100); axb.set_ylim(-0.6, 0.6); axb.axis('off')
+    # disagreement stacked bar: label inside when the segment is wide enough,
+    # otherwise below the bar in the segment's own colour (never clipped)
+    figb, axb = plt.subplots(figsize=(6.2, 1.5)); figb.patch.set_facecolor(PAPER)
+    segs = [('agreement', oa * 100, GOOD), ('quantity', q * 100, WARN),
+            ('allocation', a * 100, BAD)]
+    edge = 0.0; last_below = -99.0; below_row = 0
+    for label, val, colr in segs:
+        if val > 0.3:
+            axb.barh(0, val, left=edge, color=colr, edgecolor='white')
+            centre = edge + val / 2
+            if val >= 16:
+                axb.text(centre, 0, f'{label} {val:.0f}%', ha='center', va='center',
+                         color='white', fontsize=9, fontweight='bold')
+            else:
+                below_row = 1 if (centre - last_below) < 20 and below_row == 0 else 0
+                ytxt = -0.78 - 0.42 * below_row
+                axb.plot([centre, centre], [-0.42, ytxt + 0.12], color=colr, lw=1)
+                axb.text(centre, ytxt, f'{label} {val:.1f}%', ha='center', va='top',
+                         color=colr, fontsize=8.5, fontweight='bold')
+                last_below = centre
+        edge += val
+    axb.set_xlim(0, 100); axb.set_ylim(-1.75, 0.65); axb.axis('off')
     axb.set_title('agreement + quantity + allocation = 100%', fontsize=9,
                   color=INK, loc='left')
-    st.pyplot(figb, use_container_width=True)
+    st.pyplot(figb, width='stretch')
 
 with right:
     st.markdown('#### Per-class accuracy')
@@ -158,13 +169,65 @@ with right:
     for s in axp.spines.values(): s.set_color(FAINT)
     axp.legend(fontsize=8, loc='lower right', framealpha=0.9)
     axp.set_facecolor('white')
-    st.pyplot(figp, use_container_width=True)
+    st.pyplot(figp, width='stretch')
     st.caption("Producer's = 1 − omission (did the map find real class j). "
                "User's = 1 − commission (can you trust a map label). "
                "This chart uses the raw sample counts; the area table below shows "
                "the Olofsson-adjusted producer's accuracy, weighted by mapped area, "
                "so the two can differ.")
 
+
+# ---- show the working ----------------------------------------------------
+with st.expander('Show the working: how each number is calculated from this matrix'):
+    diag = np.diag(M).astype(int)
+    rows_t = M.sum(1).astype(int)
+    cols_t = M.sum(0).astype(int)
+    Ni = int(N)
+
+    st.markdown('##### Overall accuracy: the diagonal over the total')
+    st.code(f'correct  = {" + ".join(str(d) for d in diag)} = {diag.sum()}\n'
+            f'checked  = {Ni}\n'
+            f'overall accuracy = {diag.sum()} / {Ni} = {oa*100:.1f}%', language=None)
+
+    st.markdown("##### Producer's and user's accuracy: same cell, two denominators")
+    wk = st.selectbox('Work through one class', names, index=min(1, n - 1),
+                      key='working_class')
+    kk = names.index(wk)
+    st.code(
+        f'diagonal cell for {wk}: {diag[kk]}\n\n'
+        f"producer's accuracy (down the REFERENCE column)\n"
+        f'  column total = {" + ".join(str(int(v)) for v in M[:, kk])} = {cols_t[kk]}\n'
+        f"  PA = {diag[kk]} / {cols_t[kk]} = "
+        + (f'{diag[kk]/cols_t[kk]*100:.1f}%   (omission = {100-diag[kk]/cols_t[kk]*100:.1f}%)'
+           if cols_t[kk] else 'n/a (no reference points in this class)') + '\n\n'
+        f"user's accuracy (across the MAP row)\n"
+        f'  row total = {" + ".join(str(int(v)) for v in M[kk, :])} = {rows_t[kk]}\n'
+        f"  UA = {diag[kk]} / {rows_t[kk]} = "
+        + (f'{diag[kk]/rows_t[kk]*100:.1f}%   (commission = {100-diag[kk]/rows_t[kk]*100:.1f}%)'
+           if rows_t[kk] else 'n/a (the map never claims this class)'), language=None)
+
+    st.markdown('##### Kappa: correcting against a chance baseline (report it, do not lean on it)')
+    E = float((M.sum(1) * M.sum(0)).sum() / (N * N))
+    st.code(
+        'expected agreement from the marginals\n'
+        f'  E = sum(row total x column total) / N^2\n'
+        f'    = ({" + ".join(f"{r}x{c}" for r, c in zip(rows_t, cols_t))}) / {Ni}^2 = {E:.3f}\n'
+        f'kappa = (OA - E) / (1 - E) = ({oa:.3f} - {E:.3f}) / (1 - {E:.3f}) = {kap:.2f}',
+        language=None)
+
+    st.markdown('##### Quantity and allocation: why the map is wrong, not just how much')
+    qg = np.abs(rows_t - cols_t)
+    st.code(
+        'per-class quantity mismatch |map row total - reference column total|\n'
+        + '\n'.join(f'  {names[g]:<10s} |{rows_t[g]} - {cols_t[g]}| = {qg[g]}'
+                    for g in range(n)) + '\n'
+        f'quantity   Q = (sum of mismatches) / 2 / N = {qg.sum()} / 2 / {Ni} = {q*100:.1f}%\n'
+        f'total disagreement D = 1 - OA = {(1-oa)*100:.1f}%\n'
+        f'allocation A = D - Q = {(1-oa)*100:.1f}% - {q*100:.1f}% = {a*100:.1f}%',
+        language=None)
+    st.caption('Quantity: the map has the wrong amount of a class. Allocation: the '
+               'right amount in the wrong places. Pontius and Millones (2011), '
+               'equation 7: agreement + quantity + allocation = 100%.')
 
 # ---- area estimation -----------------------------------------------------
 st.markdown('#### Error-adjusted area with 95% confidence intervals')
@@ -182,7 +245,7 @@ tbl = pd.DataFrame({
     "Producer's %": np.round(res['pa'] * 100, 1),
     "User's %": np.round(res['ua'] * 100, 1),
 })
-st.dataframe(tbl, use_container_width=True, hide_index=True)
+st.dataframe(tbl, width='stretch', hide_index=True)
 
 pick = st.selectbox('Show one class as a chart', names, index=min(2, n - 1))
 j = names.index(pick)
@@ -199,7 +262,7 @@ axa.set_xlim(0, max(naive[j], res['area'][j] + res['ci95'][j]) * 1.15)
 axa.set_xlabel(f'{pick} area (ha)', fontsize=9)
 for s in axa.spines.values(): s.set_color(FAINT)
 axa.spines['left'].set_visible(False); axa.set_facecolor('white')
-st.pyplot(figa, use_container_width=True)
+st.pyplot(figa, width='stretch')
 
 st.caption(f"Area-weighted overall accuracy {res['oa_w']*100:.1f}%. "
            "An area estimate without its confidence interval is not defensible.")
