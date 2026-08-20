@@ -4,6 +4,13 @@ Edit a confusion matrix and watch overall accuracy, producer's and user's
 accuracy, kappa, quantity and allocation disagreement, and error-adjusted area
 with 95% confidence intervals update live. Rows = MAP, columns = REFERENCE.
 
+Informative extras:
+  - a live plain-language "Reading this matrix" diagnosis (weakest class and why,
+    biggest confusion, whether the error is amount or placement, what to fix);
+  - a per-class error table (correct / omitted / over-claimed, with producer's
+    and user's accuracy);
+  - a "show the working" panel that builds every number from the current matrix.
+
 Run:  streamlit run app.py
 """
 import numpy as np
@@ -34,6 +41,67 @@ SCHEMES = {
         M=[[34, 1, 2], [1, 28, 5], [2, 3, 24]],
         weights=[0.37, 0.34, 0.29]),
 }
+
+def diagnose(M, names, oa, q, a):
+    """Plain-language reading of the current matrix, as a list of markdown lines."""
+    M = np.asarray(M, float)
+    n = len(names)
+    diag = np.diag(M)
+    rt = M.sum(1)
+    ct = M.sum(0)
+    lines = []
+    lines.append(
+        f"**Overall accuracy is {oa*100:.0f}%** for the scene: of every checked point, that is "
+        f"the share the map got right.")
+
+    # weakest link: the lowest producer's or user's accuracy across all classes
+    cand = []
+    for k in range(n):
+        if ct[k] > 0:
+            cand.append((diag[k] / ct[k], k, 'producer'))
+        if rt[k] > 0:
+            cand.append((diag[k] / rt[k], k, 'user'))
+    if cand:
+        val, k, kind = min(cand, key=lambda x: x[0])
+        if kind == 'producer':
+            miss = int(ct[k] - diag[k])
+            lines.append(
+                f"**Weakest link: {names[k]} is being missed.** Its producer's "
+                f"accuracy is {val*100:.0f}%: {miss} of the {int(ct[k])} points that "
+                f"are really {names[k]} were labelled something else (omission).")
+        else:
+            over = int(rt[k] - diag[k])
+            lines.append(
+                f"**Weakest link: {names[k]} is being over-claimed.** Its user's "
+                f"accuracy is {val*100:.0f}%: {over} of the {int(rt[k])} points the map "
+                f"calls {names[k]} are really something else (commission).")
+
+    # biggest single confusion (largest off-diagonal cell)
+    off = M.copy()
+    np.fill_diagonal(off, 0)
+    if off.max() > 0:
+        i, j = np.unravel_index(int(np.argmax(off)), off.shape)
+        lines.append(
+            f"**Biggest single confusion:** {int(off[i, j])} points the map calls "
+            f"{names[i]} are really {names[j]}.")
+
+    # quantity vs allocation: what to fix
+    if (q + a) > 1e-9:
+        if a >= q:
+            lines.append(
+                f"**Most of the error is placement, not amount** (allocation "
+                f"{a*100:.0f}% vs quantity {q*100:.0f}%). The class totals are about "
+                f"right but pixels sit in the wrong spots, so reach for a better feature "
+                f"or a cleanup filter, not a different total.")
+        else:
+            lines.append(
+                f"**Most of the error is amount, not placement** (quantity "
+                f"{q*100:.0f}% vs allocation {a*100:.0f}%). A class total is off: the "
+                f"classifier is producing too much or too little of it.")
+    else:
+        lines.append("**No disagreement at all:** this is a perfect map, every point on the diagonal.")
+    return lines
+
 
 st.set_page_config(page_title='Confusion-Matrix Explorer', layout='wide')
 
@@ -179,6 +247,30 @@ with right:
                "This chart uses the raw sample counts; the area table below shows "
                "the Olofsson-adjusted producer's accuracy, weighted by mapped area, "
                "so the two can differ.")
+
+    # explicit per-class error counts: correct, omitted, over-claimed
+    diagc = np.diag(M).astype(int)
+    ctc = M.sum(0).astype(int)
+    rtc = M.sum(1).astype(int)
+    err_tbl = pd.DataFrame({
+        'Class': names,
+        'Correct': diagc,
+        'Omitted (missed)': (ctc - diagc),
+        "Producer's %": [f'{pa[k]:.0f}' if ctc[k] > 0 else 'n/a' for k in range(n)],
+        'Over-claimed': (rtc - diagc),
+        "User's %": [f'{ua[k]:.0f}' if rtc[k] > 0 else 'n/a' for k in range(n)],
+    })
+    st.dataframe(err_tbl, width='stretch', hide_index=True)
+    st.caption('Omitted = real class the map missed (down the reference column). '
+               'Over-claimed = points the map wrongly labelled this class (across the map row).')
+
+
+# ---- plain-language reading ----------------------------------------------
+st.markdown('#### Reading this matrix')
+st.caption('A plain-language diagnosis that updates as you edit the matrix, the way a reviewer would read it.')
+with st.container(border=True):
+    for ln in diagnose(M, names, oa, q, a):
+        st.markdown('- ' + ln)
 
 
 # ---- show the working ----------------------------------------------------
