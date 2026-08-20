@@ -12,9 +12,10 @@ Informative extras:
   - a "show the working" panel that builds every number from the current matrix;
   - the matrix with its margins: totals, producer's and user's accuracy, omission
     and commission at the end of every row and column;
-  - a "Quantity vs allocation" tab: a next-step walkthrough that splits the
-    disagreement one move at a time (count the wrong points, pair over-claims
-    with misses, pairs are allocation, leftovers are quantity);
+  - a "Quantity vs allocation" tab: a next-step walkthrough that starts at the
+    confusion matrix and highlights, on the matrix itself, the cells feeding
+    each number (diagonal, a class's row, its column, the pairing), then splits
+    the disagreement: pairs are allocation, leftovers are quantity;
   - an "Agreement by luck" tab: random label allocation with your class totals,
     the chance baseline that kappa corrects against.
 
@@ -126,6 +127,57 @@ def _simulate_chance(M_tuple, n_sims=1000):
         rng.shuffle(lab)
         out[s] = float((lab == ref).mean())
     return out
+
+
+
+# cell styles for the step-by-step matrix (background AND text colour set, so
+# every highlight stays readable on both the light and the dark theme)
+QA_DIAG = 'background-color:#e6f2e6;color:#14501a;font-weight:700'
+QA_ERR = 'background-color:#f7e9e9;color:#b23b3b;font-weight:700'
+QA_PAIR = 'background-color:#fdeed3;color:#8a5a10;font-weight:700'
+QA_TOT = 'background-color:#f2efe9;color:#1a1a1a'
+QA_TOT_HL = 'background-color:#f2efe9;color:#b23b3b;font-weight:700'
+QA_DIMMED = 'color:#9aa0a8'
+
+
+def qa_matrix_view(Mv, names_v, cell_css=None, dim_others=False,
+                   row_total_css=None, col_total_css=None):
+    # render the confusion matrix (with totals) as a styled table, highlighting
+    # exactly the cells a walkthrough step is using
+    n_ = len(names_v)
+    rt_v = Mv.sum(1).astype(int)
+    ct_v = Mv.sum(0).astype(int)
+    ridx = [f'map: {c}' for c in names_v] + ['column total']
+    rcols = [f'ref: {c}' for c in names_v] + ['row total']
+    dfm = pd.DataFrame('', index=ridx, columns=rcols, dtype=object)
+    for i in range(n_):
+        for j in range(n_):
+            dfm.iloc[i, j] = f'{int(Mv[i, j])}'
+        dfm.iloc[i, n_] = f'{rt_v[i]}'
+    for j in range(n_):
+        dfm.iloc[n_, j] = f'{ct_v[j]}'
+    dfm.iloc[n_, n_] = f'{int(Mv.sum())}'
+    cell_css = cell_css or {}
+    row_total_css = row_total_css or {}
+    col_total_css = col_total_css or {}
+
+    def _sty(d):
+        s = pd.DataFrame('', index=d.index, columns=d.columns)
+        s.iloc[n_, :] = QA_TOT
+        s.iloc[:, n_] = QA_TOT
+        for i in range(n_):
+            for j in range(n_):
+                if (i, j) in cell_css:
+                    s.iloc[i, j] = cell_css[(i, j)]
+                elif dim_others:
+                    s.iloc[i, j] = QA_DIMMED
+        for i, css in row_total_css.items():
+            s.iloc[i, n_] = css
+        for j, css in col_total_css.items():
+            s.iloc[n_, j] = css
+        return s
+
+    st.dataframe(dfm.style.apply(_sty, axis=None), width='stretch')
 
 
 st.set_page_config(page_title='Confusion-Matrix Explorer', layout='wide')
@@ -437,12 +489,14 @@ with tab_explore:
 # ---- quantity vs allocation: step-by-step walkthrough --------------------
 with tab_steps:
     st.markdown('#### Quantity vs allocation, one step at a time')
-    st.caption('Runs on whatever matrix is on the Explore tab right now. '
-               'Use the buttons to step through the split.')
+    st.caption('Runs on whatever matrix is on the Explore tab right now. Every step '
+               'highlights, on the matrix itself, exactly the cells it is using. '
+               'Rows are the map, columns are the reference.')
 
     if 'qa_step' not in st.session_state:
         st.session_state.qa_step = 1
-    QA_STEPS = 5
+    QA_STEPS = 7
+    st.session_state.qa_step = min(st.session_state.qa_step, QA_STEPS)
     b1, b2, b3, _sp = st.columns([0.16, 0.22, 0.18, 0.44])
     if b1.button('Back', width='stretch', disabled=st.session_state.qa_step <= 1):
         st.session_state.qa_step -= 1
@@ -463,61 +517,117 @@ with tab_steps:
     Nq = int(N)
     correct_q = int(diag_q.sum())
     wrong_q = Nq - correct_q
-    comm_q = rt_q - diag_q                      # over-claimed, across the map row
-    omis_q = ct_q - diag_q                      # missed, down the reference column
-    pairs_q = np.minimum(comm_q, omis_q)        # what cancels -> allocation
-    left_q = comm_q - omis_q                    # + too many, - too few
+    comm_q = rt_q - diag_q
+    omis_q = ct_q - diag_q
+    pairs_q = np.minimum(comm_q, omis_q)
+    left_q = comm_q - omis_q
     A_pts = int(pairs_q.sum())
-    Q_pts = int(np.maximum(left_q, 0).sum())    # surpluses (= deficits)
+    Q_pts = int(np.maximum(left_q, 0).sum())
+
+    if step in (3, 4, 5, 6):
+        wk_qa = st.selectbox('Class to follow through the steps', names,
+                             index=min(2, n - 1), key='qa_class')
+        kk = names.index(wk_qa)
+        row_off = [int(M[kk, j]) for j in range(n) if j != kk]
+        col_off = [int(M[i, kk]) for i in range(n) if i != kk]
 
     if step == 1:
-        st.markdown('##### Step 1 · Start with what is wrong')
+        st.markdown('##### Step 1 · Start at the confusion matrix')
         st.markdown(
-            f'Overall accuracy says the map got **{correct_q} of {Nq}** checked points right, '
-            f'so **{wrong_q} points sit off the diagonal**. The whole job of the split is to '
-            f'decide, for each of those wrong points, whether it is an **amount** problem '
-            f'(the map has too much or too little of a class) or a **placement** problem '
-            f'(the amounts are fine but the labels sit in the wrong spots).')
-        fig1, ax1 = plt.subplots(figsize=(7.5, 1.1))
-        fig1.patch.set_facecolor(PAPER)
-        ax1.barh(0, correct_q, color=FOREST, edgecolor='white')
-        ax1.barh(0, wrong_q, left=correct_q, color='#c9cdd3', edgecolor='white')
-        ax1.text(correct_q / 2, 0, f'right {correct_q}', ha='center', va='center',
-                 color='white', fontsize=9, fontweight='bold')
-        ax1.text(correct_q + wrong_q / 2, 0, f'wrong {wrong_q}', ha='center', va='center',
-                 color=INK, fontsize=9, fontweight='bold')
-        ax1.set_xlim(0, Nq); ax1.axis('off')
-        st.pyplot(fig1, width='stretch')
-        st.code(f'checked N        = {Nq}\n'
-                f'correct diagonal = {" + ".join(str(d) for d in diag_q)} = {correct_q}\n'
-                f'wrong (to split) = {Nq} - {correct_q} = {wrong_q}', language=None)
+            'Every number in the split comes off this one table. Each **row** is what the '
+            'map said, each **column** is what the reference said, and a cell counts the '
+            'sample points that landed there. The plan: find what is wrong, then split it '
+            'into wrong **amount** (quantity) and wrong **place** (allocation).')
+        qa_matrix_view(M, names)
+        st.caption('The margins are the row totals (how often the map claimed each class) '
+                   'and the column totals (how often each class was really there). The '
+                   'whole calculation uses nothing but these cells and totals.')
 
     elif step == 2:
-        st.markdown("##### Step 2 · Count each class's two errors")
+        st.markdown('##### Step 2 · The diagonal is right; the rest is what we must explain')
         st.markdown(
-            'These are numbers you already have from the matrix margins. For each class: '
-            '**over-claimed** (commission) is its map row total minus the diagonal, and '
-            '**missed** (omission) is its reference column total minus the diagonal. '
-            'Both columns add up to the same '
-            f'**{wrong_q} wrong points**, because every wrong point is an over-claim for the '
-            'class the map chose and a miss for the class it really was.')
-        t2 = pd.DataFrame({
-            'Class': names,
-            'Over-claimed (commission)': comm_q,
-            'Missed (omission)': omis_q,
-        })
-        st.dataframe(t2, width='stretch', hide_index=True)
-        st.code(f'sum of over-claims = {" + ".join(str(v) for v in comm_q)} = {int(comm_q.sum())}\n'
-                f'sum of misses      = {" + ".join(str(v) for v in omis_q)} = {int(omis_q.sum())}\n'
-                f'both equal the wrong count: {wrong_q}', language=None)
+            'Green cells are agreement: map and reference say the same thing. Every red '
+            'cell is a confusion, points the map calls one class that are really another. '
+            'The split has to account for every point in the red cells.')
+        css = {(i, i): QA_DIAG for i in range(n)}
+        for i in range(n):
+            for j in range(n):
+                if i != j and M[i, j] > 0:
+                    css[(i, j)] = QA_ERR
+        qa_matrix_view(M, names, cell_css=css, dim_others=True)
+        st.code(f'correct (green diagonal) = {" + ".join(str(d) for d in diag_q)} = {correct_q}\n'
+                f'wrong (red cells)        = {Nq} - {correct_q} = {wrong_q}', language=None)
 
     elif step == 3:
-        st.markdown('##### Step 3 · Pair up what cancels: that is allocation')
+        st.markdown(f"##### Step 3 · Across {wk_qa}'s map row: its over-claims (commission)")
         st.markdown(
-            'For each class, pair its over-claims with its misses, as far as they will go. '
-            'A pair means the class was claimed somewhere it should not be **and** missed '
-            'somewhere it should be: its total stays right, only the places are wrong. '
-            'That is a swap, and swaps are **allocation disagreement**.')
+            f'Read across the **map: {wk_qa}** row. The green diagonal cell is the {wk_qa} '
+            f'the map got right. Every red cell in that row is a point the map **called '
+            f'{wk_qa} but is really something else**: an over-claim. Their sum is the row '
+            f'total minus the diagonal.')
+        css = {(kk, kk): QA_DIAG}
+        for j in range(n):
+            if j != kk:
+                css[(kk, j)] = QA_ERR
+        qa_matrix_view(M, names, cell_css=css, dim_others=True,
+                       row_total_css={kk: QA_TOT_HL})
+        st.code(f'over-claimed ({wk_qa}) = {" + ".join(str(v) for v in row_off)} '
+                f'= {int(comm_q[kk])}\n'
+                f'check: row total - diagonal = {int(rt_q[kk])} - {int(diag_q[kk])} '
+                f'= {int(comm_q[kk])}', language=None)
+        if comm_q[kk] > 0:
+            rr = M[kk].copy()
+            rr[kk] = -1
+            jmax = int(np.argmax(rr))
+            if M[kk, jmax] > 0:
+                st.markdown(f'The biggest over-claim: **{int(M[kk, jmax])} points the map '
+                            f'calls {wk_qa} are really {names[jmax]}**. This is the same '
+                            f"count behind user's accuracy: 1 minus commission.")
+
+    elif step == 4:
+        st.markdown(f"##### Step 4 · Down {wk_qa}'s reference column: its misses (omission)")
+        st.markdown(
+            f'Now read down the **ref: {wk_qa}** column. Every red cell in the column is a '
+            f'point that **really is {wk_qa} but the map called something else**: a miss. '
+            f'Their sum is the column total minus the diagonal. Do this row-and-column '
+            f'reading for every class and you get the table below.')
+        css = {(kk, kk): QA_DIAG}
+        for i in range(n):
+            if i != kk:
+                css[(i, kk)] = QA_ERR
+        qa_matrix_view(M, names, cell_css=css, dim_others=True,
+                       col_total_css={kk: QA_TOT_HL})
+        st.code(f'missed ({wk_qa}) = {" + ".join(str(v) for v in col_off)} '
+                f'= {int(omis_q[kk])}\n'
+                f'check: column total - diagonal = {int(ct_q[kk])} - {int(diag_q[kk])} '
+                f'= {int(omis_q[kk])}', language=None)
+        t4 = pd.DataFrame({
+            'Class': names,
+            'Over-claimed (row)': comm_q,
+            'Missed (column)': omis_q,
+        })
+        st.dataframe(t4, width='stretch', hide_index=True)
+        st.caption(f'Both columns sum to the same {wrong_q} wrong points, because every '
+                   'red cell is an over-claim for its row class and a miss for its '
+                   'column class at the same time.')
+
+    elif step == 5:
+        st.markdown('##### Step 5 · Pair up what cancels: that is allocation')
+        st.markdown(
+            f'{wk_qa} over-claimed **{int(comm_q[kk])}** (across its row) and missed '
+            f'**{int(omis_q[kk])}** (down its column), both highlighted in amber. Pair them '
+            f'up as far as they go: **{int(pairs_q[kk])} pairs**. Each pair leaves '
+            f"{wk_qa}'s total exactly right, the pixels just sit in the wrong places. A "
+            f'swap. Swaps are **allocation disagreement**, and you count the pairs for '
+            f'every class.')
+        css = {(kk, kk): QA_DIAG}
+        for j in range(n):
+            if j != kk:
+                css[(kk, j)] = QA_PAIR
+        for i in range(n):
+            if i != kk:
+                css[(i, kk)] = QA_PAIR
+        qa_matrix_view(M, names, cell_css=css, dim_others=True)
         fig3, ax3 = plt.subplots(figsize=(8.2, 0.95 * n + 0.7))
         fig3.patch.set_facecolor(PAPER)
         xmax = max(1, int(max(comm_q.max(), omis_q.max())))
@@ -536,7 +646,8 @@ with tab_steps:
                      fontsize=9.5, color=INK, fontweight='bold')
         ax3.set_xlim(0, xmax * 1.45)
         ax3.set_ylim(-0.8, (n - 1) * 1.15 + 0.8)
-        ax3.set_yticks([]); ax3.set_facecolor('white')
+        ax3.set_yticks([])
+        ax3.set_facecolor('white')
         for s in ax3.spines.values():
             s.set_color(FAINT)
         ax3.spines['left'].set_visible(False)
@@ -551,14 +662,18 @@ with tab_steps:
                 f'allocation disagreement = {A_pts} / {Nq} = {A_pts / Nq * 100:.1f}%',
                 language=None)
 
-    elif step == 4:
-        st.markdown('##### Step 4 · The leftover is quantity')
+    elif step == 6:
+        st.markdown('##### Step 6 · The leftover is quantity')
         st.markdown(
-            'Whatever could not pair is a real **amount** problem. A class with over-claims '
-            'left over has too much on the map; a class with misses left over has too little. '
-            'And every surplus point in one class is a deficit point in another, the same '
-            'wrong point seen from two sides, so it is counted **once**, not twice. '
-            'That is why the textbook formula sums the per-class gaps and halves them.')
+            f'Whatever could not pair is a real **amount** problem. {wk_qa} over-claimed '
+            f'{int(comm_q[kk])} and missed {int(omis_q[kk])}, so after pairing it has '
+            f'**{abs(int(left_q[kk]))} left over**'
+            + (', too many on the map.' if left_q[kk] > 0 else
+               (', too few on the map.' if left_q[kk] < 0 else
+                ': nothing left over, its total is exactly right.'))
+            + ' And every surplus point in one class is a deficit point in another, the '
+              'same wrong point seen from two sides, so it is counted **once**, not twice. '
+              'That is why the textbook formula sums the per-class gaps and halves them.')
         desc = []
         for g in range(n):
             if left_q[g] > 0:
@@ -567,13 +682,14 @@ with tab_steps:
                 desc.append(f'{int(-left_q[g])} too few')
             else:
                 desc.append('balanced')
-        t4 = pd.DataFrame({
+        t6 = pd.DataFrame({
             'Class': names,
             'Over-claimed': comm_q,
             'Missed': omis_q,
-            'Leftover after pairing': desc,
+            'Pairs cancelled': pairs_q,
+            'Leftover': desc,
         })
-        st.dataframe(t4, width='stretch', hide_index=True)
+        st.dataframe(t6, width='stretch', hide_index=True)
         surplus = int(np.maximum(left_q, 0).sum())
         deficit = int(np.maximum(-left_q, 0).sum())
         st.code(f'surpluses (too many) = {surplus}    deficits (too few) = {deficit}\n'
@@ -583,7 +699,7 @@ with tab_steps:
                 f'= {int(np.abs(left_q).sum())}, then halve = {Q_pts})', language=None)
 
     else:
-        st.markdown('##### Step 5 · Put it back together')
+        st.markdown('##### Step 7 · Put it back together')
         st.markdown(
             f'Every one of the {wrong_q} wrong points is now explained: **{A_pts} are '
             f'allocation** (right amount, wrong place) and **{Q_pts} are quantity** (wrong '
@@ -606,7 +722,9 @@ with tab_steps:
                     ax5.text(edge + val / 2, -0.9, f'{lab} {pct:.1f}%', ha='center',
                              va='top', fontsize=8.4, color=colr, fontweight='bold')
             edge += val
-        ax5.set_xlim(0, Nq); ax5.set_ylim(-1.8, 0.7); ax5.axis('off')
+        ax5.set_xlim(0, Nq)
+        ax5.set_ylim(-1.8, 0.7)
+        ax5.axis('off')
         st.pyplot(fig5, width='stretch')
         st.code(f'agreement  {correct_q / Nq * 100:.1f}%\n'
                 f'quantity   {Q_pts / Nq * 100:.1f}%\n'
