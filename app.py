@@ -12,6 +12,9 @@ Informative extras:
   - a "show the working" panel that builds every number from the current matrix;
   - the matrix with its margins: totals, producer's and user's accuracy, omission
     and commission at the end of every row and column;
+  - a "Quantity vs allocation" tab: a next-step walkthrough that splits the
+    disagreement one move at a time (count the wrong points, pair over-claims
+    with misses, pairs are allocation, leftovers are quantity);
   - an "Agreement by luck" tab: random label allocation with your class totals,
     the chance baseline that kappa corrects against.
 
@@ -187,7 +190,9 @@ with st.sidebar:
     weights = np.array(w) / wsum
 
 
-tab_explore, tab_chance = st.tabs(['Explore the matrix', 'Agreement by luck: kappa'])
+tab_explore, tab_steps, tab_chance = st.tabs(
+    ['Explore the matrix', 'Quantity vs allocation: step by step',
+     'Agreement by luck: kappa'])
 
 with tab_explore:
     # ---- editable matrix -----------------------------------------------------
@@ -263,8 +268,8 @@ with tab_explore:
         # disagreement stacked bar: label inside when the segment is wide enough,
         # otherwise below the bar in the segment's own colour (never clipped)
         figb, axb = plt.subplots(figsize=(6.2, 1.5)); figb.patch.set_facecolor(PAPER)
-        segs = [('agreement', oa * 100, GOOD), ('quantity', q * 100, WARN),
-                ('allocation', a * 100, BAD)]
+        segs = [('agreement', oa * 100, FOREST), ('quantity', q * 100, WATER),
+                ('allocation', a * 100, BARE)]
         edge = 0.0; last_below = -99.0; below_row = 0
         for label, val, colr in segs:
             if val > 0.3:
@@ -272,7 +277,8 @@ with tab_explore:
                 centre = edge + val / 2
                 if val >= 16:
                     axb.text(centre, 0, f'{label} {val:.0f}%', ha='center', va='center',
-                             color='white', fontsize=9, fontweight='bold')
+                             color=(INK if colr == BARE else 'white'), fontsize=9,
+                             fontweight='bold')
                 else:
                     below_row = 1 if (centre - last_below) < 20 and below_row == 0 else 0
                     ytxt = -0.78 - 0.42 * below_row
@@ -427,6 +433,195 @@ with tab_explore:
     st.caption(f"Area-weighted overall accuracy {res['oa_w']*100:.1f}%. "
                "An area estimate without its confidence interval is not defensible.")
 
+
+# ---- quantity vs allocation: step-by-step walkthrough --------------------
+with tab_steps:
+    st.markdown('#### Quantity vs allocation, one step at a time')
+    st.caption('Runs on whatever matrix is on the Explore tab right now. '
+               'Use the buttons to step through the split.')
+
+    if 'qa_step' not in st.session_state:
+        st.session_state.qa_step = 1
+    QA_STEPS = 5
+    b1, b2, b3, _sp = st.columns([0.16, 0.22, 0.18, 0.44])
+    if b1.button('Back', width='stretch', disabled=st.session_state.qa_step <= 1):
+        st.session_state.qa_step -= 1
+        st.rerun()
+    if b2.button('Next step', width='stretch', type='primary',
+                 disabled=st.session_state.qa_step >= QA_STEPS):
+        st.session_state.qa_step += 1
+        st.rerun()
+    if b3.button('Start again', width='stretch', disabled=st.session_state.qa_step <= 1):
+        st.session_state.qa_step = 1
+        st.rerun()
+    step = st.session_state.qa_step
+    st.progress(step / QA_STEPS, text=f'Step {step} of {QA_STEPS}')
+
+    diag_q = np.diag(M).astype(int)
+    rt_q = M.sum(1).astype(int)
+    ct_q = M.sum(0).astype(int)
+    Nq = int(N)
+    correct_q = int(diag_q.sum())
+    wrong_q = Nq - correct_q
+    comm_q = rt_q - diag_q                      # over-claimed, across the map row
+    omis_q = ct_q - diag_q                      # missed, down the reference column
+    pairs_q = np.minimum(comm_q, omis_q)        # what cancels -> allocation
+    left_q = comm_q - omis_q                    # + too many, - too few
+    A_pts = int(pairs_q.sum())
+    Q_pts = int(np.maximum(left_q, 0).sum())    # surpluses (= deficits)
+
+    if step == 1:
+        st.markdown('##### Step 1 · Start with what is wrong')
+        st.markdown(
+            f'Overall accuracy says the map got **{correct_q} of {Nq}** checked points right, '
+            f'so **{wrong_q} points sit off the diagonal**. The whole job of the split is to '
+            f'decide, for each of those wrong points, whether it is an **amount** problem '
+            f'(the map has too much or too little of a class) or a **placement** problem '
+            f'(the amounts are fine but the labels sit in the wrong spots).')
+        fig1, ax1 = plt.subplots(figsize=(7.5, 1.1))
+        fig1.patch.set_facecolor(PAPER)
+        ax1.barh(0, correct_q, color=FOREST, edgecolor='white')
+        ax1.barh(0, wrong_q, left=correct_q, color='#c9cdd3', edgecolor='white')
+        ax1.text(correct_q / 2, 0, f'right {correct_q}', ha='center', va='center',
+                 color='white', fontsize=9, fontweight='bold')
+        ax1.text(correct_q + wrong_q / 2, 0, f'wrong {wrong_q}', ha='center', va='center',
+                 color=INK, fontsize=9, fontweight='bold')
+        ax1.set_xlim(0, Nq); ax1.axis('off')
+        st.pyplot(fig1, width='stretch')
+        st.code(f'checked N        = {Nq}\n'
+                f'correct diagonal = {" + ".join(str(d) for d in diag_q)} = {correct_q}\n'
+                f'wrong (to split) = {Nq} - {correct_q} = {wrong_q}', language=None)
+
+    elif step == 2:
+        st.markdown("##### Step 2 · Count each class's two errors")
+        st.markdown(
+            'These are numbers you already have from the matrix margins. For each class: '
+            '**over-claimed** (commission) is its map row total minus the diagonal, and '
+            '**missed** (omission) is its reference column total minus the diagonal. '
+            'Both columns add up to the same '
+            f'**{wrong_q} wrong points**, because every wrong point is an over-claim for the '
+            'class the map chose and a miss for the class it really was.')
+        t2 = pd.DataFrame({
+            'Class': names,
+            'Over-claimed (commission)': comm_q,
+            'Missed (omission)': omis_q,
+        })
+        st.dataframe(t2, width='stretch', hide_index=True)
+        st.code(f'sum of over-claims = {" + ".join(str(v) for v in comm_q)} = {int(comm_q.sum())}\n'
+                f'sum of misses      = {" + ".join(str(v) for v in omis_q)} = {int(omis_q.sum())}\n'
+                f'both equal the wrong count: {wrong_q}', language=None)
+
+    elif step == 3:
+        st.markdown('##### Step 3 · Pair up what cancels: that is allocation')
+        st.markdown(
+            'For each class, pair its over-claims with its misses, as far as they will go. '
+            'A pair means the class was claimed somewhere it should not be **and** missed '
+            'somewhere it should be: its total stays right, only the places are wrong. '
+            'That is a swap, and swaps are **allocation disagreement**.')
+        fig3, ax3 = plt.subplots(figsize=(8.2, 0.95 * n + 0.7))
+        fig3.patch.set_facecolor(PAPER)
+        xmax = max(1, int(max(comm_q.max(), omis_q.max())))
+        for g in range(n):
+            y0 = (n - 1 - g) * 1.15
+            m = int(pairs_q[g])
+            for yy, tot, lab in ((y0 + 0.19, int(comm_q[g]), 'over-claimed'),
+                                 (y0 - 0.19, int(omis_q[g]), 'missed')):
+                if m > 0:
+                    ax3.barh(yy, m, height=0.3, color=BARE, edgecolor='white')
+                if tot > m:
+                    ax3.barh(yy, tot - m, left=m, height=0.3, color=WATER, edgecolor='white')
+                ax3.text(tot + xmax * 0.02, yy, f'{lab} {tot}', va='center',
+                         fontsize=8.2, color=INK)
+            ax3.text(-xmax * 0.03, y0, names[g], ha='right', va='center',
+                     fontsize=9.5, color=INK, fontweight='bold')
+        ax3.set_xlim(0, xmax * 1.45)
+        ax3.set_ylim(-0.8, (n - 1) * 1.15 + 0.8)
+        ax3.set_yticks([]); ax3.set_facecolor('white')
+        for s in ax3.spines.values():
+            s.set_color(FAINT)
+        ax3.spines['left'].set_visible(False)
+        hnd = [plt.Rectangle((0, 0), 1, 1, color=BARE),
+               plt.Rectangle((0, 0), 1, 1, color=WATER)]
+        ax3.legend(hnd, ['pairs up and cancels: allocation', 'left over: quantity'],
+                   fontsize=8, loc='upper right', framealpha=0.95)
+        st.pyplot(fig3, width='stretch')
+        st.code('pairs that cancel per class: '
+                + ', '.join(f'{names[g]} {int(pairs_q[g])}' for g in range(n)) + '\n'
+                f'allocation points = {" + ".join(str(int(v)) for v in pairs_q)} = {A_pts}\n'
+                f'allocation disagreement = {A_pts} / {Nq} = {A_pts / Nq * 100:.1f}%',
+                language=None)
+
+    elif step == 4:
+        st.markdown('##### Step 4 · The leftover is quantity')
+        st.markdown(
+            'Whatever could not pair is a real **amount** problem. A class with over-claims '
+            'left over has too much on the map; a class with misses left over has too little. '
+            'And every surplus point in one class is a deficit point in another, the same '
+            'wrong point seen from two sides, so it is counted **once**, not twice. '
+            'That is why the textbook formula sums the per-class gaps and halves them.')
+        desc = []
+        for g in range(n):
+            if left_q[g] > 0:
+                desc.append(f'{int(left_q[g])} too many')
+            elif left_q[g] < 0:
+                desc.append(f'{int(-left_q[g])} too few')
+            else:
+                desc.append('balanced')
+        t4 = pd.DataFrame({
+            'Class': names,
+            'Over-claimed': comm_q,
+            'Missed': omis_q,
+            'Leftover after pairing': desc,
+        })
+        st.dataframe(t4, width='stretch', hide_index=True)
+        surplus = int(np.maximum(left_q, 0).sum())
+        deficit = int(np.maximum(-left_q, 0).sum())
+        st.code(f'surpluses (too many) = {surplus}    deficits (too few) = {deficit}\n'
+                f'same points from two sides, so count once: quantity points = {Q_pts}\n'
+                f'quantity disagreement = {Q_pts} / {Nq} = {Q_pts / Nq * 100:.1f}%\n'
+                f'(textbook form: sum the gaps {" + ".join(str(int(abs(v))) for v in left_q)} '
+                f'= {int(np.abs(left_q).sum())}, then halve = {Q_pts})', language=None)
+
+    else:
+        st.markdown('##### Step 5 · Put it back together')
+        st.markdown(
+            f'Every one of the {wrong_q} wrong points is now explained: **{A_pts} are '
+            f'allocation** (right amount, wrong place) and **{Q_pts} are quantity** (wrong '
+            f'amount). Add the agreement back on and the three pieces cover every checked '
+            f'point.')
+        fig5, ax5 = plt.subplots(figsize=(8.0, 1.4))
+        fig5.patch.set_facecolor(PAPER)
+        edge = 0.0
+        for lab, val, colr, txtc in [('agreement', correct_q, FOREST, 'white'),
+                                     ('quantity', Q_pts, WATER, 'white'),
+                                     ('allocation', A_pts, BARE, INK)]:
+            if val > 0:
+                ax5.barh(0, val, left=edge, color=colr, edgecolor='white')
+                pct = val / Nq * 100
+                if pct >= 14:
+                    ax5.text(edge + val / 2, 0, f'{lab} {pct:.0f}%', ha='center',
+                             va='center', color=txtc, fontsize=9, fontweight='bold')
+                else:
+                    ax5.plot([edge + val / 2] * 2, [-0.42, -0.8], color=colr, lw=1)
+                    ax5.text(edge + val / 2, -0.9, f'{lab} {pct:.1f}%', ha='center',
+                             va='top', fontsize=8.4, color=colr, fontweight='bold')
+            edge += val
+        ax5.set_xlim(0, Nq); ax5.set_ylim(-1.8, 0.7); ax5.axis('off')
+        st.pyplot(fig5, width='stretch')
+        st.code(f'agreement  {correct_q / Nq * 100:.1f}%\n'
+                f'quantity   {Q_pts / Nq * 100:.1f}%\n'
+                f'allocation {A_pts / Nq * 100:.1f}%\n'
+                f'total      {(correct_q + Q_pts + A_pts) / Nq * 100:.0f}%', language=None)
+        if A_pts >= Q_pts:
+            st.markdown(
+                '**The reading:** most of the error is placement, not amount. The class '
+                'totals are close to right, so reach for better features or a cleanup '
+                'filter, not a different total.')
+        else:
+            st.markdown(
+                '**The reading:** most of the error is amount. A class total is off, the '
+                'classifier is producing too much or too little of something, and that is '
+                'what needs fixing first.')
 
 # ---- agreement by luck: the kappa baseline -------------------------------
 GRID = 30
