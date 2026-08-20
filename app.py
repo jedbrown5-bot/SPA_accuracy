@@ -705,25 +705,33 @@ with tab_steps:
             f'allocation** (right amount, wrong place) and **{Q_pts} are quantity** (wrong '
             f'amount). Add the agreement back on and the three pieces cover every checked '
             f'point.')
-        fig5, ax5 = plt.subplots(figsize=(8.0, 1.4))
+        fig5, ax5 = plt.subplots(figsize=(8.0, 1.7))
         fig5.patch.set_facecolor(PAPER)
         edge = 0.0
+        last_below = -1e9
+        brow = 0
         for lab, val, colr, txtc in [('agreement', correct_q, FOREST, 'white'),
                                      ('quantity', Q_pts, WATER, 'white'),
                                      ('allocation', A_pts, BARE, INK)]:
             if val > 0:
                 ax5.barh(0, val, left=edge, color=colr, edgecolor='white')
                 pct = val / Nq * 100
+                centre = edge + val / 2
                 if pct >= 14:
-                    ax5.text(edge + val / 2, 0, f'{lab} {pct:.0f}%', ha='center',
+                    ax5.text(centre, 0, f'{lab} {pct:.0f}%', ha='center',
                              va='center', color=txtc, fontsize=9, fontweight='bold')
                 else:
-                    ax5.plot([edge + val / 2] * 2, [-0.42, -0.8], color=colr, lw=1)
-                    ax5.text(edge + val / 2, -0.9, f'{lab} {pct:.1f}%', ha='center',
+                    # below-bar labels stagger onto a second row when the previous
+                    # below-bar label is close enough to collide
+                    brow = 1 if (centre - last_below) < 0.24 * Nq and brow == 0 else 0
+                    ytxt = -0.8 - 0.62 * brow
+                    ax5.plot([centre, centre], [-0.42, ytxt + 0.1], color=colr, lw=1)
+                    ax5.text(centre, ytxt, f'{lab} {pct:.1f}%', ha='center',
                              va='top', fontsize=8.4, color=colr, fontweight='bold')
+                    last_below = centre
             edge += val
         ax5.set_xlim(0, Nq)
-        ax5.set_ylim(-1.8, 0.7)
+        ax5.set_ylim(-2.4, 0.7)
         ax5.axis('off')
         st.pyplot(fig5, width='stretch')
         st.code(f'agreement  {correct_q / Nq * 100:.1f}%\n'
