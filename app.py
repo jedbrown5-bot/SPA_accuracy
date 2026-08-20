@@ -22,6 +22,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 import streamlit as st
 
 import accuracy_metrics as A
@@ -126,11 +127,9 @@ def _simulate_chance(M_tuple, n_sims=1000):
 
 st.set_page_config(page_title='Confusion-Matrix Explorer', layout='wide')
 
-st.markdown(
-    f"<h2 style='color:{INK};margin-bottom:0'>Confusion-Matrix Explorer</h2>"
-    f"<p style='color:{INK_SOFT};margin-top:2px'>Week 10 · Accuracy Assessment · "
-    f"rows are the <b>map</b>, columns are the <b>reference</b>. Edit any cell and "
-    f"watch the numbers move.</p>", unsafe_allow_html=True)
+st.markdown('## Confusion-Matrix Explorer')
+st.caption('Week 10 · Accuracy Assessment · rows are the **map**, columns are the '
+           '**reference**. Edit any cell and watch the numbers move.')
 
 
 # ---- state ---------------------------------------------------------------
@@ -233,15 +232,17 @@ with tab_explore:
         ann.iloc[n, n] = f'{int(N)}'
 
         def _margin_style(dfa):
+            # every styled cell sets BOTH background and text colour, so the table
+            # stays readable whether the app runs on the light or the dark theme
             sty = pd.DataFrame('', index=dfa.index, columns=dfa.columns)
-            for i in range(n):
-                sty.iloc[i, i] = 'background-color:#e6f2e6;font-weight:600'
-            sty.iloc[n, :] = 'background-color:#f2efe9'
-            sty.iloc[:, n] = 'background-color:#f2efe9'
+            sty.iloc[n, :] = 'background-color:#f2efe9;color:#1a1a1a'
+            sty.iloc[:, n] = 'background-color:#f2efe9;color:#1a1a1a'
             sty.iloc[n + 1, :n] = f'background-color:#e8eef6;color:{WATER};font-weight:600'
             sty.iloc[n + 2, :n] = f'background-color:#f7e9e9;color:{BAD}'
             sty.iloc[:n, n + 1] = f'background-color:#e9f2e9;color:{FOREST};font-weight:600'
             sty.iloc[:n, n + 2] = f'background-color:#f7e9e9;color:{BAD}'
+            for i in range(n):
+                sty.iloc[i, i] = 'background-color:#e6f2e6;color:#14501a;font-weight:700'
             return sty
 
         st.dataframe(ann.style.apply(_margin_style, axis=None), width='stretch')
@@ -428,50 +429,113 @@ with tab_explore:
 
 
 # ---- agreement by luck: the kappa baseline -------------------------------
+GRID = 30
+
+
+def _exact_counts(props, total):
+    """Integer counts per class summing to total (largest remainder)."""
+    raw = np.asarray(props, float) * total
+    base = np.floor(raw).astype(int)
+    short = int(total - base.sum())
+    if short > 0:
+        order = np.argsort(-(raw - base))
+        base[order[:short]] += 1
+    return base
+
+
 with tab_chance:
     st.markdown('#### Agreement by luck: what kappa corrects for')
     st.markdown(
-        'A map with no skill at all still gets points right by coincidence. To see how many, '
-        'keep exactly the same amount of each class as your current matrix, on both the map '
-        'side and the reference side, and pair the labels up completely at random. Any '
-        'agreement that survives is luck, not skill, and that luck is the baseline kappa '
+        'A map with no skill still gets pixels right by coincidence. Below is a toy landscape '
+        'with the same class proportions as your matrix. The left panel is the reference, the '
+        'truth on the ground. The middle panel is a map made with zero skill: the right amount '
+        'of each class, scattered completely at random. The right panel shows where the random '
+        'map fluked a correct label anyway. That fluked agreement is the baseline kappa '
         'measures your map against.')
 
-    rt_c = M.sum(1).astype(int)
-    ct_c = M.sum(0).astype(int)
+    rt_c = M.sum(1)
+    ct_c = M.sum(0)
     Nc = int(N)
     Pe = float((rt_c * ct_c).sum()) / (Nc * Nc)
 
-    ref_lbl = np.repeat(np.arange(n), ct_c)
-    map_lbl = np.repeat(np.arange(n), rt_c)
+    npix = GRID * GRID
+    ref_counts = _exact_counts(ct_c / Nc, npix)
+    map_counts = _exact_counts(rt_c / Nc, npix)
 
-    lcol, rcol2 = st.columns([1.0, 1.1])
+    # a patchy reference landscape: smooth a random field, then cut it into class
+    # bands so the class areas match the reference (column) proportions exactly
+    rng_ref = np.random.default_rng(7)
+    f = np.kron(rng_ref.normal(size=(6, 6)), np.ones((5, 5)))
+    for _ in range(4):
+        f = (np.roll(f, 1, 0) + np.roll(f, -1, 0) + np.roll(f, 1, 1) + np.roll(f, -1, 1) + f) / 5
+    order = np.argsort(f.ravel())
+    ref_grid = np.empty(npix, int)
+    pos = 0
+    for k in range(n):
+        ref_grid[order[pos:pos + ref_counts[k]]] = k
+        pos += ref_counts[k]
+    ref_grid = ref_grid.reshape(GRID, GRID)
+
+    if 'chance_rolls' not in st.session_state:
+        st.session_state.chance_rolls = 0
+    if st.button('Roll a new random map', width='stretch'):
+        st.session_state.chance_rolls += 1
+    rng_roll = np.random.default_rng(1000 + st.session_state.chance_rolls)
+    rand_flat = np.repeat(np.arange(n), map_counts)
+    rng_roll.shuffle(rand_flat)
+    rand_grid = rand_flat.reshape(GRID, GRID)
+
+    match = rand_grid == ref_grid
+    hit = int(match.sum())
+
+    cmap = ListedColormap(cols)
+    figm, axm = plt.subplots(1, 3, figsize=(11.5, 4.2))
+    figm.patch.set_facecolor(PAPER)
+    axm[0].imshow(ref_grid, cmap=cmap, vmin=0, vmax=n - 1, interpolation='nearest')
+    axm[0].set_title('Reference: the truth on the ground', fontsize=10, color=INK)
+    axm[1].imshow(rand_grid, cmap=cmap, vmin=0, vmax=n - 1, interpolation='nearest')
+    axm[1].set_title('A random map: zero skill', fontsize=10, color=INK)
+    axm[2].imshow(match.astype(int), cmap=ListedColormap(['#e3e0da', GOOD]),
+                  vmin=0, vmax=1, interpolation='nearest')
+    axm[2].set_title(f'Correct by luck: {hit} of {npix} pixels ({hit / npix * 100:.0f}%)',
+                     fontsize=10, color=GOOD, fontweight='bold')
+    for axx in axm:
+        axx.set_xticks([])
+        axx.set_yticks([])
+        for s in axx.spines.values():
+            s.set_color(FAINT)
+    handles = [plt.Rectangle((0, 0), 1, 1, color=cols[k]) for k in range(n)]
+    figm.legend(handles, names, loc='lower center', ncol=n, fontsize=9, frameon=False)
+    figm.subplots_adjust(bottom=0.13, top=0.9, wspace=0.06, left=0.02, right=0.98)
+    st.pyplot(figm, width='stretch')
+    st.caption(f'Class areas match your matrix: the reference panel uses the reference (column) '
+               f'totals, the random map the map (row) totals. Roll again and the green count '
+               f'lands near {Pe * 100:.0f}% every time. No skill at all, and still about '
+               f'{Pe * 100:.0f}% right: that free agreement is the luck kappa strips out.')
+
+    lcol, rcol2 = st.columns([1.0, 1.15])
 
     with lcol:
-        st.markdown('##### Roll one random map')
-        st.caption('Same row and column totals as your matrix; only the pairing is random.')
-        if 'chance_rolls' not in st.session_state:
-            st.session_state.chance_rolls = 0
-        if st.button('Roll a new random map', width='stretch'):
-            st.session_state.chance_rolls += 1
-        rng = np.random.default_rng(1000 + st.session_state.chance_rolls)
-        shuffled = map_lbl.copy()
-        rng.shuffle(shuffled)
-        R = np.zeros((n, n), int)
-        np.add.at(R, (shuffled, ref_lbl), 1)
-        roll_oa = float(np.trace(R)) / Nc
-        rdf = pd.DataFrame(R, index=[f'map: {c}' for c in names],
-                           columns=[f'ref: {c}' for c in names])
-        st.dataframe(rdf, width='stretch')
-        st.metric('This random map got', f'{roll_oa * 100:.0f}% right',
-                  help='The diagonal of the random matrix over the total. Pure coincidence.')
-        st.caption(f'Diagonal {int(np.trace(R))} of {Nc}. Roll again and it lands near '
-                   f'{Pe * 100:.0f}% every time: the class totals decide how much luck is available.')
+        st.markdown('##### The numbers')
+        m1, m2 = st.columns(2)
+        m1.metric('This random roll', f'{hit / npix * 100:.0f}%',
+                  help='The green pixels over the whole grid. Pure coincidence.')
+        m2.metric('Expected by luck (Pe)', f'{Pe * 100:.0f}%',
+                  help='Sum over classes of (row total x column total) / N squared: what random '
+                       'labelling with your class totals scores on average.')
+        m3, m4 = st.columns(2)
+        m3.metric('Your map (Po)', f'{oa * 100:.0f}%',
+                  help='Your overall accuracy, the observed agreement.')
+        m4.metric('Kappa', f'{kap:.2f}',
+                  help='(Po - Pe) / (1 - Pe): how far above luck your map sits, rescaled so 1 is '
+                       'perfect and 0 is no better than luck.')
+        st.code(f'kappa = (Po - Pe) / (1 - Pe)\n'
+                f'      = ({oa:.2f} - {Pe:.2f}) / (1 - {Pe:.2f}) = {kap:.2f}', language=None)
 
     with rcol2:
-        st.markdown('##### A thousand random maps')
+        st.markdown('##### A thousand random rolls')
         sims = _simulate_chance(tuple(map(tuple, M.astype(int).tolist())))
-        figh, axh = plt.subplots(figsize=(6.4, 2.9))
+        figh, axh = plt.subplots(figsize=(6.4, 2.7))
         figh.patch.set_facecolor(PAPER)
         axh.hist(sims * 100, bins=24, color='#c9cdd3', edgecolor='white')
         top = axh.get_ylim()[1]
@@ -492,25 +556,13 @@ with tab_chance:
         axh.set_facecolor('white')
         st.pyplot(figh, width='stretch')
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric('Expected by luck (Pe)', f'{Pe * 100:.0f}%',
-                  help='Sum over classes of (row total x column total) / N squared: what random '
-                       'labelling with your class totals scores on average.')
-        m2.metric('Your map (Po)', f'{oa * 100:.0f}%',
-                  help='Your overall accuracy, the observed agreement.')
-        m3.metric('Kappa', f'{kap:.2f}',
-                  help='(Po - Pe) / (1 - Pe): how far above luck your map sits, rescaled so 1 is '
-                       'perfect and 0 is no better than luck.')
-        st.code(f'kappa = (Po - Pe) / (1 - Pe)\n'
-                f'      = ({oa:.2f} - {Pe:.2f}) / (1 - {Pe:.2f}) = {kap:.2f}', language=None)
-
     with st.container(border=True):
         st.markdown(
             f"**The reading.** Luck alone is worth about {Pe * 100:.0f}% here, so of your map's "
             f"{oa * 100:.0f}%, only the gap above the luck line is evidence of skill. Kappa rescales "
             f"that gap by the room left above luck, which is why kappa always sits at or below "
             f"overall accuracy. Now load the majority-class trap preset in the sidebar and come "
-            f"back: with one dominant class the luck line climbs on its own, and kappa collapses "
-            f"even though overall accuracy still looks healthy. That sensitivity to class totals "
-            f"is also why the field moved past kappa: the baseline moves with the scene, not with "
-            f"the map's skill.")
+            f"back: with one dominant class the random map is nearly all one colour, the luck "
+            f"line climbs on its own, and kappa collapses even though overall accuracy still "
+            f"looks healthy. That sensitivity to class totals is also why the field moved past "
+            f"kappa: the baseline moves with the scene, not with the map's skill.")
