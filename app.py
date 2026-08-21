@@ -767,12 +767,13 @@ def _exact_counts(props, total):
 with tab_chance:
     st.markdown('#### Agreement by luck: what kappa corrects for')
     st.markdown(
-        'A map with no skill still gets pixels right by coincidence. Below is a toy landscape '
-        'with the same class proportions as your matrix. The left panel is the reference, the '
-        'truth on the ground. The middle panel is a map made with zero skill: the right amount '
-        'of each class, scattered completely at random. The right panel shows where the random '
-        'map fluked a correct label anyway. That fluked agreement is the baseline kappa '
-        'measures your map against.')
+        'A map with no skill still gets pixels right by coincidence, and kappa asks how '
+        'much. Top row: the truth on the ground, then a **trained map** built to match your '
+        'confusion matrix, its errors sitting along the patch edges the way a real '
+        'classifier fails, then where it is right. Bottom row: the same truth, a **random '
+        'map** with zero skill, the right amount of each class scattered completely at '
+        'random, then where it flukes a correct pixel anyway. Kappa measures how far the '
+        'top row sits above the bottom row.')
 
     rt_c = M.sum(1)
     ct_c = M.sum(0)
@@ -809,30 +810,67 @@ with tab_chance:
     match = rand_grid == ref_grid
     hit = int(match.sum())
 
+    # the trained map: the truth mislabelled at your matrix's own rates, with the
+    # errors pushed to the patch edges the way a real classifier fails
+    rng_t = np.random.default_rng(11)
+    refflat = ref_grid.ravel()
+    edge_ct = np.zeros_like(ref_grid)
+    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nb = np.roll(np.roll(ref_grid, dy, 0), dx, 1)
+        edge_ct = edge_ct + (nb != ref_grid)
+    edgeflat = edge_ct.ravel().astype(float)
+    trained = refflat.copy()
+    for j in range(n):
+        idx = np.where(refflat == j)[0]
+        colj = M[:, j].astype(float)
+        if idx.size == 0 or colj.sum() <= 0:
+            continue
+        cnts_j = _exact_counts(colj / colj.sum(), idx.size)
+        n_wrong = int(idx.size - cnts_j[j])
+        if n_wrong <= 0:
+            continue
+        order = np.argsort(-(edgeflat[idx] + rng_t.random(idx.size)))
+        wrong_lbls = np.concatenate([np.full(int(cnts_j[i]), i)
+                                     for i in range(n) if i != j])
+        rng_t.shuffle(wrong_lbls)
+        trained[idx[order[:n_wrong]]] = wrong_lbls[:n_wrong]
+    trained_grid = trained.reshape(GRID, GRID)
+    match_t = trained_grid == ref_grid
+    hit_t = int(match_t.sum())
+
     cmap = ListedColormap(cols)
-    figm, axm = plt.subplots(1, 3, figsize=(11.5, 4.2))
+    skill_cmap = ListedColormap(['#e3e0da', GOOD])
+    luck_cmap = ListedColormap(['#e3e0da', BARE])
+    figm, axm = plt.subplots(2, 3, figsize=(11.5, 7.8))
     figm.patch.set_facecolor(PAPER)
-    axm[0].imshow(ref_grid, cmap=cmap, vmin=0, vmax=n - 1, interpolation='nearest')
-    axm[0].set_title('Reference: the truth on the ground', fontsize=10, color=INK)
-    axm[1].imshow(rand_grid, cmap=cmap, vmin=0, vmax=n - 1, interpolation='nearest')
-    axm[1].set_title('A random map: zero skill', fontsize=10, color=INK)
-    axm[2].imshow(match.astype(int), cmap=ListedColormap(['#e3e0da', GOOD]),
-                  vmin=0, vmax=1, interpolation='nearest')
-    axm[2].set_title(f'Correct by luck: {hit} of {npix} pixels ({hit / npix * 100:.0f}%)',
-                     fontsize=10, color=GOOD, fontweight='bold')
-    for axx in axm:
-        axx.set_xticks([])
-        axx.set_yticks([])
-        for s in axx.spines.values():
+    panels = [
+        (0, 0, ref_grid, cmap, n - 1, 'Reference: the truth', INK, False),
+        (0, 1, trained_grid, cmap, n - 1, 'Your trained map: skill', INK, False),
+        (0, 2, match_t.astype(int), skill_cmap, 1,
+         f'Correct: {hit_t} of {npix} ({hit_t / npix * 100:.0f}%)', GOOD, True),
+        (1, 0, ref_grid, cmap, n - 1, 'Reference: the same truth', INK, False),
+        (1, 1, rand_grid, cmap, n - 1, 'A random map: zero skill', INK, False),
+        (1, 2, match.astype(int), luck_cmap, 1,
+         f'Correct by luck: {hit} of {npix} ({hit / npix * 100:.0f}%)', BARE, True),
+    ]
+    for r, c, img, cm, vmx, title, tcol, bold in panels:
+        axm[r, c].imshow(img, cmap=cm, vmin=0, vmax=vmx, interpolation='nearest')
+        axm[r, c].set_title(title, fontsize=10, color=tcol,
+                            fontweight='bold' if bold else 'normal')
+        axm[r, c].set_xticks([])
+        axm[r, c].set_yticks([])
+        for s in axm[r, c].spines.values():
             s.set_color(FAINT)
     handles = [plt.Rectangle((0, 0), 1, 1, color=cols[k]) for k in range(n)]
     figm.legend(handles, names, loc='lower center', ncol=n, fontsize=9, frameon=False)
-    figm.subplots_adjust(bottom=0.13, top=0.9, wspace=0.06, left=0.02, right=0.98)
+    figm.subplots_adjust(bottom=0.075, top=0.95, wspace=0.06, hspace=0.12,
+                         left=0.02, right=0.98)
     st.pyplot(figm, width='stretch')
-    st.caption(f'Class areas match your matrix: the reference panel uses the reference (column) '
-               f'totals, the random map the map (row) totals. Roll again and the green count '
-               f'lands near {Pe * 100:.0f}% every time. No skill at all, and still about '
-               f'{Pe * 100:.0f}% right: that free agreement is the luck kappa strips out.')
+    st.caption(f'The reference uses your matrix\'s reference (column) totals; the trained and '
+               f'random maps both use its map (row) totals, so all the class amounts agree. '
+               f'The trained map mislabels each reference class at the rates in your matrix. '
+               f'Roll again and only the random map re-scatters. Skill lands about '
+               f'{oa * 100:.0f}%, luck lands about {Pe * 100:.0f}%, and kappa measures the gap.')
 
     lcol, rcol2 = st.columns([1.0, 1.15])
 
@@ -861,13 +899,16 @@ with tab_chance:
         axh.hist(sims * 100, bins=24, color='#c9cdd3', edgecolor='white')
         top = axh.get_ylim()[1]
         axh.axvline(Pe * 100, color=BARE, lw=2)
-        axh.text(Pe * 100 + 1, top * 0.95, f'luck: {Pe * 100:.0f}%', color=BARE,
-                 fontsize=9, fontweight='bold', va='top')
+        luck_left = Pe * 100 > 18
+        axh.text(Pe * 100 - 1.5 if luck_left else Pe * 100 + 1.5, top * 0.95,
+                 f'luck: {Pe * 100:.0f}%', color=BARE, fontsize=9, fontweight='bold',
+                 va='top', ha='right' if luck_left else 'left')
         axh.axvline(oa * 100, color=FOREST, lw=2)
         if abs(oa - Pe) > 0.02:
-            axh.text(oa * 100 - 1 if oa > 0.8 else oa * 100 + 1, top * 0.78,
+            map_right = oa * 100 < 78
+            axh.text(oa * 100 + 1.5 if map_right else oa * 100 - 1.5, top * 0.80,
                      f'your map: {oa * 100:.0f}%', color=FOREST, fontsize=9,
-                     fontweight='bold', va='top', ha='right' if oa > 0.8 else 'left')
+                     fontweight='bold', va='top', ha='left' if map_right else 'right')
         axh.set_xlim(0, 100)
         axh.set_yticks([])
         axh.set_xlabel('overall accuracy of a random map (%)', fontsize=9)
